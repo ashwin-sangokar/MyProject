@@ -10,6 +10,7 @@ const methodOverride = require("method-override");
 const ejsMate = require("ejs-mate");
 const ExpressError = require("./utils/ExpressError.js");
 const session = require("express-session");
+const MongoStore = require("connect-mongo");
 const flash = require("connect-flash");
 const passport = require("passport");
 const localStrategy = require("passport-local");
@@ -31,8 +32,19 @@ app.use(methodOverride("_method"));
 app.engine("ejs", ejsMate);
 app.use(express.static(path.join(__dirname, "/public")));
 
+const store = MongoStore.create({
+    mongoUrl: "mongodb://127.0.0.1:27017/WanderLust",
+    crypto: {
+        secret: process.env.SECRET 
+    }
+});
+
+store.on("error", () => {
+    console.log("ERROR in Mongo SESSION STORE",err);
+});
 
 const sessionOptions = {
+    store,
     secret : process.env.SECRET,
     resave : false,
     saveUninitialized : true,
@@ -42,6 +54,7 @@ const sessionOptions = {
         maxAge : 1000*60*60*24*7
     }
 };
+
 app.use(session(sessionOptions));
 app.use(flash());
 
