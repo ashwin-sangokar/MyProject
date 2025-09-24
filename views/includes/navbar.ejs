@@ -1,0 +1,80 @@
+<style>
+  .btn-search {
+    background-color: white;
+    color: #ff385c;
+    border: 1px solid #ff385c;
+    border-radius: 25px;
+  }
+  .btn-search:hover {
+    background-color: #ff1e3c;
+    color: white;
+  }
+  .btn-search i {
+    display: inline;
+    margin-right: 0.5rem;
+  }
+  .search-input {
+    border-radius: 25px;
+    width: 400px;
+    background-color: white;
+    color: #ff385c;
+  }
+
+  .nav-btn {
+    background-color: white;
+    color: #ff385c !important;
+    border: 1px solid #ff385c;
+    border-radius: 20px;
+  }
+  .nav-btn:hover {
+   background-color: #ff1e3c;
+    color: white !important;
+  }
+  .box a {
+    margin-left: 10px;
+  }
+  .heading {
+    font-family: Pacifico, cursive;
+    font-size: 30px;
+    color: #ff385c !important;
+  }
+</style>
+
+
+
+<nav class="navbar navbar-expand-md bg-body-light border-bottom sticky-top">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/listings"><i class="fa-regular fa-compass"></i></a>
+    <button
+      class="navbar-toggler"
+      type="button"
+      data-bs-toggle="collapse"
+      data-bs-target="#navbarNavAltMarkup"
+    >
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarNavAltMarkup">
+      <div class="navbar-nav">
+        <b><a class="nav-link heading" href="/listings">WanderLust</a></b>
+      </div>
+
+      <div class="navbar-nav ms-auto">
+        <form class="d-flex" role="search">
+          <input class="form-control me-2 search-input" type="search" placeholder="Search Destinations" aria-label="Search"/>
+          <button class="btn btn-search" type="submit"><i class="fa-solid fa-magnifying-glass"></i>Search</button>
+        </form>
+      </div>
+
+      <div class="navbar-nav ms-auto box">
+        <a class="nav-link nav-btn" href="/listings/new">Add new Listing</a>
+        <% if (!currentUser) {  %>
+        <a class="nav-link nav-btn"  href="/signup"><b>Sign Up</b></a>
+        <a class="nav-link nav-btn" href="/login"><b>Login</b></a>
+        <% } %>
+        <% if (currentUser) {  %>
+        <a class="nav-link nav-btn" href="/logout"><b>Logout</b></a>
+        <% } %>
+      </div>
+    </div>
+  </div>
+</nav>
