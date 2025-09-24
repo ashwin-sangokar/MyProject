@@ -25,7 +25,7 @@
             <p class="card-text"><%= listing.country %> </p>
         </div>
     </div>
-    <% if(currentUser && listing.owner._id === currentUser._id) { %>
+    <% if(currentUser && String(listing.owner._id) === String(currentUser._id)) { %>
     <div class="show-btn">
         <div class="col-1">
         <a href="/listings/<%= listing._id %>/edit" class="btn btn-dark">Edit</a>
