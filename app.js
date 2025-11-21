@@ -1,6 +1,5 @@
-// /mnt/data/app.js
 if (process.env.NODE_ENV != "production") {
-  require('dotenv').config();
+    require('dotenv').config();
 }
 
 const express = require("express");
@@ -21,146 +20,103 @@ const listingRouter = require("./routes/listing.js");
 const reviewRouter = require("./routes/reviews.js");
 const userRouter = require("./routes/user.js");
 
-const dbUrl = process.env.ATLASDB_URL || "mongodb://127.0.0.1:27017/WanderLust";
+const dbUrl = process.env.ATLASDB_URL;
 
-// Basic app config that doesn't depend on DB
+main().then(() => console.log("connection successful")).catch(err => console.log(err));
+async function main() {
+    //await mongoose.connect("mongodb://127.0.0.1:27017/WanderLust");
+    await mongoose.connect(dbUrl);
+}
+
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({extended:true}));
 app.use(methodOverride("_method"));
 app.engine("ejs", ejsMate);
 app.use(express.static(path.join(__dirname, "/public")));
 
-// temporary locals middleware (will be redefined after sessions are registered)
-app.use((req, res, next) => {
-  res.locals.success = undefined;
-  res.locals.error = undefined;
-  res.locals.currentUser = undefined;
-  next();
+const store = MongoStore.create({
+    mongoUrl: dbUrl,
+    crypto: {
+        secret: process.env.SECRET 
+    }
 });
 
-async function start() {
-  if (!dbUrl) {
-    console.error("FATAL: ATLASDB_URL is not set in environment");
-    process.exit(1);
-  }
+store.on("error", () => {
+    console.log("ERROR in Mongo SESSION STORE",err);
+});
 
-  try {
-    console.log("Using ATLASDB_URL (masked):", dbUrl.replace(/:[^:@]+@/, ":*****@"));
-  } catch (e) {
-    console.log("Using ATLASDB_URL (masked): <unable to mask>");
-  }
+const sessionOptions = {
+    store,
+    secret : process.env.SECRET,
+    resave : false,
+    saveUninitialized : true,
+    cookie : {
+        httpOnly : true,
+        expires : Date.now() + 1000*60*60*24*7,
+        maxAge : 1000*60*60*24*7
+    }
+};
 
-  try {
-    // Connect to DB first
-    // Note: newer MongoDB driver ignores useNewUrlParser/useUnifiedTopology — harmless but optional
-    await mongoose.connect(dbUrl);
-    console.log("connection successful");
+app.use(session(sessionOptions));
+app.use(flash());
 
-    // Use mongoose's existing connected client for session store to avoid races
-    const client = (typeof mongoose.connection.getClient === "function") ? mongoose.connection.getClient() : null;
-    if (!client) {
-      console.error("FATAL: mongoose.connection.getClient() returned falsy. Cannot create session store safely.");
-      process.exit(1);
+app.use(passport.initialize());
+app.use(passport.session());
+passport.use(new localStrategy(User.authenticate()));
+
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
+
+
+/*
+app.get("/", (req, res) => {
+    res.send("working well");
+});
+*/
+
+
+app.use((req, res, next) => {
+    res.locals.success = req.flash("success");
+    res.locals.error = req.flash("error");
+    res.locals.currentUser = req.user;
+    next();
+});
+
+/*
+app.get("/demouser", async(req, res) => {
+    let fakeUser = new User({
+        email : "student@gmail.com",
+        username : "delta-student"
+    });
+    let newUser = await User.register(fakeUser, "helloWorld");
+    res.send(newUser);  
+});
+*/
+
+app.use("/listings", listingRouter);
+app.use("/listings/:id/reviews", reviewRouter);
+app.use("/", userRouter);
+
+
+/*
+// 404 route
+app.all("/*", (req, res, next) => {
+    next(new ExpressError(404, "Page Not Found!"));
+});
+*/
+
+app.use((err, req, res, next) => {
+
+    // If it's a Mongoose CastError (invalid ObjectId)
+    if (err.name === "CastError") {
+        err = new ExpressError(400, "Invalid ID format!");
     }
 
-    const store = MongoStore.create({
-      client, // use existing connected Mongo client (no mongoUrl race)
-      // optional: stringify: false,
-      crypto: {
-        secret: process.env.SECRET || 'this_should_be_changed'
-      }
-    });
+    let {statusCode=500, message="Something went wrong"} = err;
+    res.status(statusCode).render("error.ejs", {statusCode, message});
+});
 
-    store.on("error", (err) => {
-      console.error("ERROR in Mongo SESSION STORE", err);
-    });
-
-    const sessionOptions = {
-      store,
-      secret: process.env.SECRET || 'this_should_be_changed',
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24 * 7
-      }
-    };
-
-    // Register session & flash AFTER store creation
-    app.use(session(sessionOptions));
-    app.use(flash());
-
-    // populate res.locals now that flash & session exist
-    app.use((req, res, next) => {
-      res.locals.success = req.flash("success");
-      res.locals.error = req.flash("error");
-      res.locals.currentUser = req.user;
-      next();
-    });
-
-    // Passport after session
-    app.use(passport.initialize());
-    app.use(passport.session());
-    passport.use(new localStrategy(User.authenticate()));
-    passport.serializeUser(User.serializeUser());
-    passport.deserializeUser(User.deserializeUser());
-
-    // Routes
-    app.use("/listings", listingRouter);
-
-    // Mount reviews under a different param name to avoid parse collisions,
-    // but keep backwards compatibility by copying listingId -> id for controllers.
-    app.use(
-      "/listings/:listingId/reviews",
-      (req, res, next) => {
-        if (req.params && req.params.listingId) req.params.id = req.params.listingId;
-        next();
-      },
-      reviewRouter
-    );
-
-    app.use("/", userRouter);
-
-    // 404 handler
-    app.all("/*", (req, res, next) => {
-      next(new ExpressError(404, "Page Not Found!"));
-    });
-
-    // Central error handler — respect headersSent to avoid double-send
-    app.use((err, req, res, next) => {
-      if (err && err.name === "CastError") {
-        err = new ExpressError(400, "Invalid ID format!");
-      }
-      const { statusCode = 500, message = "Something went wrong" } = err || {};
-
-      if (res.headersSent) {
-        console.error("Headers already sent while handling error for", req.originalUrl, "-> forwarding");
-        return next(err);
-      }
-
-      try {
-        return res.status(statusCode).render("error.ejs", { statusCode, message });
-      } catch (renderErr) {
-        console.error("Error while rendering error page:", renderErr);
-        if (!res.headersSent) {
-          return res.status(500).send("Something went wrong");
-        }
-        return next(renderErr);
-      }
-    });
-
-    // start server
-    const PORT = process.env.PORT || 8080;
-    app.listen(PORT, () => {
-      console.log(`server is running on port ${PORT}`);
-    });
-
-  } catch (err) {
-    console.error("DB connection failed:", err);
-    process.exit(1);
-  }
-}
-
-// Start the app
-start();
+app.listen(8080, () => {
+    console.log("server is running on port 8080");
+}); 
