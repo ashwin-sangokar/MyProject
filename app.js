@@ -137,14 +137,10 @@ async function start() {
 
     // Routes
     app.use("/listings", listingRouter);
-    app.use("/listings/:listingId/reviews", reviewRouter);
-
+    app.use("/listings/:id/reviews", reviewRouter);
     app.use("/", userRouter);
 
-    // 404 handler (re-enable predictable error flow)
-    app.all("/*", (req, res, next) => {
-      next(new ExpressError(404, "Page Not Found!"));
-    });
+   
 
     // Central error handler — respect headersSent to avoid double-send
     app.use((err, req, res, next) => {
