@@ -1,3 +1,4 @@
+// Minimal patched app.js — replace your existing app.js with this
 if (process.env.NODE_ENV != "production") {
     require('dotenv').config();
 }
@@ -25,92 +26,159 @@ const dbUrl = process.env.ATLASDB_URL;
 // Basic app config that doesn't depend on DB
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
-app.use(express.urlencoded({extended:true}));
+app.use(express.urlencoded({ extended: true }));
 app.use(methodOverride("_method"));
 app.engine("ejs", ejsMate);
 app.use(express.static(path.join(__dirname, "/public")));
 
-// middleware that can be registered now (not DB-dependent)
+/*
+  Defensive guard: wrap common response methods so that if a route accidentally
+  tries to send a second response, we log it and ignore the second attempt
+  instead of crashing the process with ERR_HTTP_HEADERS_SENT.
+  This is minimal and reversible — once you fix routes, you can remove it.
+*/
 app.use((req, res, next) => {
-    res.locals.success = req.flash ? req.flash("success") : undefined;
-    res.locals.error = req.flash ? req.flash("error") : undefined;
-    res.locals.currentUser = req.user;
-    next();
+  let warned = false;
+  const wrap = (fn) => {
+    return function guarded(...args) {
+      if (res.headersSent) {
+        if (!warned) {
+          warned = true;
+          console.warn(`Warning: attempted to call ${fn.name} after headers were sent for ${req.method} ${req.originalUrl}`);
+          console.warn(new Error().stack.split('\n').slice(2,6).join('\n'));
+        }
+        return;
+      }
+      return fn.apply(this, args);
+    };
+  };
+
+  res.send = wrap(res.send.bind(res));
+  res.render = wrap(res.render.bind(res));
+  res.redirect = wrap(res.redirect.bind(res));
+  res.json = wrap(res.json.bind(res));
+  res.end = wrap(res.end.bind(res));
+
+  next();
 });
 
-// central startup function - wait for DB, then attach DB-dependent middleware & routes
+// temporary locals middleware (will be redefined after sessions are registered)
+app.use((req, res, next) => {
+  res.locals.success = undefined;
+  res.locals.error = undefined;
+  res.locals.currentUser = undefined;
+  next();
+});
+
+/*
+  Central startup: connect to DB first, then create session store and
+  register session/flash/passport & routes. This prevents connect-mongo from
+  receiving a null client and avoids the null .length error.
+*/
 async function start() {
-    if (!dbUrl) {
-        console.error("FATAL: ATLASDB_URL is not set in environment");
-        process.exit(1);
-    }
-    // Masked print to verify env is present (no password leak)
+  if (!dbUrl) {
+    console.error("FATAL: ATLASDB_URL is not set in environment");
+    process.exit(1);
+  }
+
+  try {
     console.log("Using ATLASDB_URL (masked):", dbUrl.replace(/:[^:@]+@/, ":*****@"));
+  } catch (e) {
+    console.log("Using ATLASDB_URL (masked): <unable to mask>");
+  }
 
-    try {
-        await mongoose.connect(dbUrl, { useNewUrlParser: true, useUnifiedTopology: true });
-        console.log("connection successful");
+  try {
+    // Wait for DB connection before creating store
+    await mongoose.connect(dbUrl, { useNewUrlParser: true, useUnifiedTopology: true });
+    console.log("connection successful");
 
-        // create session store AFTER DB connection
-        const store = MongoStore.create({
-            mongoUrl: dbUrl,
-            crypto: {
-                secret: process.env.SECRET
-            }
-        });
+    const store = MongoStore.create({
+      mongoUrl: dbUrl,
+      crypto: {
+        secret: process.env.SECRET
+      }
+    });
 
-        store.on("error", (err) => {
-            // actual err variable available here now
-            console.error("ERROR in Mongo SESSION STORE", err);
-        });
+    // fix: actually capture the error object in the handler
+    store.on("error", (err) => {
+      console.error("ERROR in Mongo SESSION STORE", err);
+    });
 
-        const sessionOptions = {
-            store,
-            secret : process.env.SECRET || 'this_should_be_changed',
-            resave : false,
-            saveUninitialized : false, // recommended
-            cookie : {
-                httpOnly : true,
-                expires : Date.now() + 1000*60*60*24*7,
-                maxAge : 1000*60*60*24*7
-            }
-        };
+    const sessionOptions = {
+      store,
+      secret: process.env.SECRET || 'this_should_be_changed',
+      resave: false,
+      saveUninitialized: false, // avoid creating empty sessions
+      cookie: {
+        httpOnly: true,
+        expires: Date.now() + 1000 * 60 * 60 * 24 * 7,
+        maxAge: 1000 * 60 * 60 * 24 * 7
+      }
+    };
 
-        app.use(session(sessionOptions));
-        app.use(flash());
+    // Register session & flash AFTER store creation
+    app.use(session(sessionOptions));
+    app.use(flash());
 
-        // Passport should be initialized after session available and DB connected
-        app.use(passport.initialize());
-        app.use(passport.session());
-        passport.use(new localStrategy(User.authenticate()));
-        passport.serializeUser(User.serializeUser());
-        passport.deserializeUser(User.deserializeUser());
+    // populate res.locals now that flash & session exist
+    app.use((req, res, next) => {
+      res.locals.success = req.flash("success");
+      res.locals.error = req.flash("error");
+      res.locals.currentUser = req.user;
+      next();
+    });
 
-        // Routes (after passport)
-        app.use("/listings", listingRouter);
-        app.use("/listings/:id/reviews", reviewRouter);
-        app.use("/", userRouter);
+    // Passport after session
+    app.use(passport.initialize());
+    app.use(passport.session());
+    passport.use(new localStrategy(User.authenticate()));
+    passport.serializeUser(User.serializeUser());
+    passport.deserializeUser(User.deserializeUser());
 
-        // Error handler (keeps same logic)
-        app.use((err, req, res, next) => {
-            if (err && err.name === "CastError") {
-                err = new ExpressError(400, "Invalid ID format!");
-            }
-            let {statusCode=500, message="Something went wrong"} = err || {};
-            res.status(statusCode).render("error.ejs", {statusCode, message});
-        });
+    // Routes
+    app.use("/listings", listingRouter);
+    app.use("/listings/:id/reviews", reviewRouter);
+    app.use("/", userRouter);
 
-        // start server after everything set up
-        const PORT = process.env.PORT || 8080;
-        app.listen(PORT, () => {
-            console.log(server is running on port ${PORT});
-        });
+    // 404 handler (re-enable predictable error flow)
+    app.all("/*", (req, res, next) => {
+      next(new ExpressError(404, "Page Not Found!"));
+    });
 
-    } catch (err) {
-        console.error("DB connection failed:", err);
-        process.exit(1);
-    }
+    // Central error handler — respect headersSent to avoid double-send
+    app.use((err, req, res, next) => {
+      if (err && err.name === "CastError") {
+        err = new ExpressError(400, "Invalid ID format!");
+      }
+      const { statusCode = 500, message = "Something went wrong" } = err || {};
+
+      if (res.headersSent) {
+        console.error("Headers already sent while handling error for", req.originalUrl, "-> forwarding");
+        return next(err);
+      }
+
+      try {
+        return res.status(statusCode).render("error.ejs", { statusCode, message });
+      } catch (renderErr) {
+        console.error("Error while rendering error page:", renderErr);
+        if (!res.headersSent) {
+          return res.status(500).send("Something went wrong");
+        }
+        return next(renderErr);
+      }
+    });
+
+    // start server
+    const PORT = process.env.PORT || 8080;
+    app.listen(PORT, () => {
+      console.log(`server is running on port ${PORT}`);
+    });
+
+  } catch (err) {
+    console.error("DB connection failed:", err);
+    process.exit(1);
+  }
 }
 
-// start the app
+// Start the app
 start();
