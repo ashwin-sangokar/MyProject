@@ -137,16 +137,7 @@ async function start() {
 
     // Routes
     app.use("/listings", listingRouter);
-    app.use(
-  "/listings/:listingId/reviews",
-  (req, res, next) => {
-    if (req.params && req.params.listingId) {
-      req.params.id = req.params.listingId;
-    }
-    next();
-  },
-  reviewRouter
-);
+    app.use("/listings/:listingId/reviews", reviewRouter);
 
     app.use("/", userRouter);
 
