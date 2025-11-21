@@ -1,3 +1,6 @@
+// patched app.js (replace your current app.js with this)
+// Reference: original uploaded file. See file citation above. :contentReference[oaicite:1]{index=1}
+
 if (process.env.NODE_ENV != "production") {
     require('dotenv').config();
 }
@@ -25,27 +28,63 @@ const dbUrl = process.env.ATLASDB_URL;
 // Basic app config that doesn't depend on DB
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
-app.use(express.urlencoded({extended:true}));
+app.use(express.urlencoded({ extended: true }));
 app.use(methodOverride("_method"));
 app.engine("ejs", ejsMate);
 app.use(express.static(path.join(__dirname, "/public")));
 
-// middleware that can be registered now (not DB-dependent)
+// Defensive middleware: prevent double-send crashes by no-op'ing subsequent sends
+// and logging a single warning (per-request). This prevents ERR_HTTP_HEADERS_SENT from crashing.
 app.use((req, res, next) => {
-    res.locals.success = req.flash ? req.flash("success") : undefined;
-    res.locals.error = req.flash ? req.flash("error") : undefined;
-    res.locals.currentUser = req.user;
+    // track if we've already warned on this request
+    let warned = false;
+
+    function makeGuard(orig) {
+        return function guarded(...args) {
+            if (res.headersSent) {
+                if (!warned) {
+                    warned = true;
+                    console.warn(`Warning: attempted to call ${orig.name} after headers were sent for ${req.method} ${req.originalUrl}`);
+                    // optionally log a small stack for debugging
+                    console.warn(new Error().stack.split('\n').slice(2,6).join('\n'));
+                }
+                // gracefully ignore further attempts to modify response
+                return;
+            }
+            return orig.apply(this, args);
+        };
+    }
+
+    // wrap the most common response-sending methods
+    res.send = makeGuard(res.send.bind(res));
+    res.render = makeGuard(res.render.bind(res));
+    res.redirect = makeGuard(res.redirect.bind(res));
+    res.json = makeGuard(res.json.bind(res));
+    res.end = makeGuard(res.end.bind(res));
+
     next();
 });
 
-// central startup function - wait for DB, then attach DB-dependent middleware & routes
+// Temporary locals middleware before sessions are registered (safe)
+app.use((req, res, next) => {
+    res.locals.success = undefined;
+    res.locals.error = undefined;
+    res.locals.currentUser = undefined;
+    next();
+});
+
+// Central startup: connect DB first, then attach session / passport / routes
 async function start() {
     if (!dbUrl) {
         console.error("FATAL: ATLASDB_URL is not set in environment");
         process.exit(1);
     }
     // Masked print to verify env is present (no password leak)
-    console.log("Using ATLASDB_URL (masked):", dbUrl.replace(/:[^:@]+@/, ":*****@"));
+    try {
+        console.log("Using ATLASDB_URL (masked):", dbUrl.replace(/:[^:@]+@/, ":*****@"));
+    } catch (e) {
+        console.log("Using ATLASDB_URL (masked): <unable to mask>");
+    }
 
     try {
         await mongoose.connect(dbUrl, { useNewUrlParser: true, useUnifiedTopology: true });
@@ -60,24 +99,32 @@ async function start() {
         });
 
         store.on("error", (err) => {
-            // actual err variable available here now
             console.error("ERROR in Mongo SESSION STORE", err);
         });
 
         const sessionOptions = {
             store,
-            secret : process.env.SECRET || 'this_should_be_changed',
-            resave : false,
-            saveUninitialized : false, // recommended
-            cookie : {
-                httpOnly : true,
-                expires : Date.now() + 1000*60*60*24*7,
-                maxAge : 1000*60*60*24*7
+            secret: process.env.SECRET || 'this_should_be_changed',
+            resave: false,
+            saveUninitialized: false, // recommended
+            cookie: {
+                httpOnly: true,
+                expires: Date.now() + 1000 * 60 * 60 * 24 * 7,
+                maxAge: 1000 * 60 * 60 * 24 * 7
             }
         };
 
+        // Register session & flash AFTER store creation
         app.use(session(sessionOptions));
         app.use(flash());
+
+        // Now populate res.locals from flash and req.user
+        app.use((req, res, next) => {
+            res.locals.success = req.flash("success");
+            res.locals.error = req.flash("error");
+            res.locals.currentUser = req.user;
+            next();
+        });
 
         // Passport should be initialized after session available and DB connected
         app.use(passport.initialize());
@@ -91,13 +138,36 @@ async function start() {
         app.use("/listings/:id/reviews", reviewRouter);
         app.use("/", userRouter);
 
-        // Error handler (keeps same logic)
+        // 404 handler — keep predictable flow
+        app.all("/*", (req, res, next) => {
+            next(new ExpressError(404, "Page Not Found!"));
+        });
+
+        // Central error handler — respects headersSent
         app.use((err, req, res, next) => {
+            // If it's a Mongoose CastError (invalid ObjectId)
             if (err && err.name === "CastError") {
                 err = new ExpressError(400, "Invalid ID format!");
             }
-            let {statusCode=500, message="Something went wrong"} = err || {};
-            res.status(statusCode).render("error.ejs", {statusCode, message});
+
+            let { statusCode = 500, message = "Something went wrong" } = err || {};
+
+            // If headers already sent, forward to default express handler (prevents double-send)
+            if (res.headersSent) {
+                console.error("Headers already sent while handling error for", req.originalUrl, "-> forwarding to default handler");
+                return next(err);
+            }
+
+            try {
+                return res.status(statusCode).render("error.ejs", { statusCode, message });
+            } catch (renderErr) {
+                // As a last resort, send a minimal response
+                console.error("Error while rendering error page:", renderErr);
+                if (!res.headersSent) {
+                    return res.status(500).send("Something went wrong");
+                }
+                return next(renderErr);
+            }
         });
 
         // start server after everything set up
@@ -114,3 +184,4 @@ async function start() {
 
 // start the app
 start();
+
