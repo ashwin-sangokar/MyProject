@@ -137,7 +137,10 @@ async function start() {
 
     // Routes
     app.use("/listings", listingRouter);
-    app.use("/listings/:id/reviews", reviewRouter);
+    app.use("/listings/:listingId/reviews", (req, res, next) => {
+  if (req.params && req.params.listingId) req.params.id = req.params.listingId;
+  next();
+}, reviewRouter);
     app.use("/", userRouter);
 
     // 404 handler (re-enable predictable error flow)
